@@ -2,7 +2,6 @@
 
 A modern, responsive web application for managing shoe boutique inventory, sales, orders, and customer relationships. Built with PHP, MySQL, TailwindCSS, and Chart.js.
 
-![Dashboard Preview](https://via.placeholder.com/800x400/4F46E5/FFFFFF?text=Shoe+Boutique+Dashboard)
 
 ## ✨ Features
 
