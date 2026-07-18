@@ -35,15 +35,42 @@ $stmt = $db->prepare($sql);
 $stmt->execute();
 $stats['low_stock'] = $stmt->fetchColumn();
 
-// Recent sales for chart
-$sql = "SELECT DATE(created_at) as date, SUM(total_amount) as total 
-        FROM orders 
-        WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-        GROUP BY DATE(created_at) 
+// Recent sales for chart - FIXED: Use sale_date from sales table instead of orders
+$sql = "SELECT DATE(sale_date) as date, SUM(total_amount) as total 
+        FROM sales 
+        WHERE sale_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        GROUP BY DATE(sale_date) 
         ORDER BY date";
 $stmt = $db->prepare($sql);
 $stmt->execute();
 $sales_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// If no sales data, create placeholder with zeros for last 7 days
+if (empty($sales_data)) {
+    $sales_data = [];
+    for ($i = 6; $i >= 0; $i--) {
+        $date = date('Y-m-d', strtotime("-$i days"));
+        $sales_data[] = ['date' => $date, 'total' => 0];
+    }
+} else {
+    // Fill in missing dates with zeros
+    $filled_data = [];
+    for ($i = 6; $i >= 0; $i--) {
+        $date = date('Y-m-d', strtotime("-$i days"));
+        $found = false;
+        foreach ($sales_data as $row) {
+            if ($row['date'] == $date) {
+                $filled_data[] = $row;
+                $found = true;
+                break;
+            }
+        }
+        if (!$found) {
+            $filled_data[] = ['date' => $date, 'total' => 0];
+        }
+    }
+    $sales_data = $filled_data;
+}
 
 // Top selling products
 $sql = "SELECT p.name, SUM(oi.quantity) as total_sold
@@ -57,6 +84,32 @@ $sql = "SELECT p.name, SUM(oi.quantity) as total_sold
 $stmt = $db->prepare($sql);
 $stmt->execute();
 $top_products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// If no products data, add placeholder
+if (empty($top_products)) {
+    $top_products = [['name' => 'No Data', 'total_sold' => 0]];
+}
+
+// Prepare data for JavaScript with proper JSON encoding
+$chart_labels = json_encode(array_map(function($item) {
+    return date('M j', strtotime($item['date']));
+}, $sales_data));
+
+$chart_data = json_encode(array_map(function($item) {
+    return floatval($item['total']);
+}, $sales_data));
+
+$has_sales_data = !empty($sales_data) && array_sum(array_column($sales_data, 'total')) > 0;
+
+$product_labels = json_encode(array_map(function($item) {
+    return addslashes($item['name']);
+}, $top_products));
+
+$product_data = json_encode(array_map(function($item) {
+    return intval($item['total_sold']);
+}, $top_products));
+
+$has_product_data = !empty($top_products) && $top_products[0]['name'] != 'No Data';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -67,6 +120,13 @@ $top_products = $stmt->fetchAll(PDO::FETCH_ASSOC);
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .chart-container {
+            position: relative;
+            height: 250px;
+            width: 100%;
+        }
+    </style>
 </head>
 <body class="bg-gray-50">
     <?php include 'header.php'; ?>
@@ -135,12 +195,16 @@ $top_products = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                 <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
                     <h3 class="text-lg font-semibold mb-4">Sales Trend (Last 7 Days)</h3>
-                    <canvas id="salesChart" height="250"></canvas>
+                    <div class="chart-container">
+                        <canvas id="salesChart"></canvas>
+                    </div>
                 </div>
                 
                 <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
                     <h3 class="text-lg font-semibold mb-4">Top Selling Products</h3>
-                    <canvas id="productsChart" height="250"></canvas>
+                    <div class="chart-container">
+                        <canvas id="productsChart"></canvas>
+                    </div>
                 </div>
             </div>
             
@@ -166,14 +230,20 @@ $top_products = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             $stmt->execute();
                             $activities = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             
+                            if (!empty($activities)):
                             foreach ($activities as $activity): ?>
                             <tr>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900"><?php echo $activity['username']; ?></td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"><?php echo $activity['action']; ?></td>
-                                <td class="px-6 py-4 text-sm text-gray-500"><?php echo $activity['description']; ?></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900"><?php echo htmlspecialchars($activity['username']); ?></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"><?php echo htmlspecialchars($activity['action']); ?></td>
+                                <td class="px-6 py-4 text-sm text-gray-500"><?php echo htmlspecialchars($activity['description']); ?></td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"><?php echo date('M j, g:i A', strtotime($activity['created_at'])); ?></td>
                             </tr>
-                            <?php endforeach; ?>
+                            <?php endforeach; 
+                            else: ?>
+                            <tr>
+                                <td colspan="4" class="px-6 py-4 text-center text-gray-500">No recent activity</td>
+                            </tr>
+                            <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
@@ -182,58 +252,111 @@ $top_products = $stmt->fetchAll(PDO::FETCH_ASSOC);
     </div>
     
     <script>
-        // Sales Chart
-        const salesCtx = document.getElementById('salesChart').getContext('2d');
-        const salesChart = new Chart(salesCtx, {
-            type: 'line',
-            data: {
-                labels: [<?php echo implode(',', array_map(function($item) { return "'" . date('M j', strtotime($item['date'])) . "'"; }, $sales_data)); ?>],
-                datasets: [{
-                    label: 'Daily Sales ($)',
-                    data: [<?php echo implode(',', array_column($sales_data, 'total')); ?>],
-                    borderColor: 'rgb(79, 70, 229)',
-                    backgroundColor: 'rgba(79, 70, 229, 0.1)',
-                    tension: 0.4,
-                    fill: true
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: {
-                        position: 'top',
+        document.addEventListener('DOMContentLoaded', function() {
+            // Sales Chart
+            <?php if ($has_sales_data): ?>
+            const salesCtx = document.getElementById('salesChart');
+            if (salesCtx) {
+                new Chart(salesCtx.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: <?php echo $chart_labels; ?>,
+                        datasets: [{
+                            label: 'Daily Sales (K)',
+                            data: <?php echo $chart_data; ?>,
+                            borderColor: 'rgb(79, 70, 229)',
+                            backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                            tension: 0.4,
+                            fill: true,
+                            pointRadius: 4,
+                            pointHoverRadius: 6
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return 'K' + value.toFixed(2);
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
+                });
             }
-        });
-        
-        // Products Chart
-        const productsCtx = document.getElementById('productsChart').getContext('2d');
-        const productsChart = new Chart(productsCtx, {
-            type: 'bar',
-            data: {
-                labels: [<?php echo implode(',', array_map(function($item) { return "'" . $item['name'] . "'"; }, $top_products)); ?>],
-                datasets: [{
-                    label: 'Units Sold',
-                    data: [<?php echo implode(',', array_column($top_products, 'total_sold')); ?>],
-                    backgroundColor: 'rgba(16, 185, 129, 0.8)',
-                    borderColor: 'rgb(16, 185, 129)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: {
-                        position: 'top',
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true
-                    }
-                }
+            <?php else: ?>
+            // Display message if no data
+            const salesCtx = document.getElementById('salesChart');
+            if (salesCtx) {
+                salesCtx.parentElement.innerHTML = '<p class="text-gray-500 text-center py-8">No sales data available for the last 7 days</p>';
             }
+            <?php endif; ?>
+            
+            // Products Chart
+            <?php if ($has_product_data): ?>
+            const productsCtx = document.getElementById('productsChart');
+            if (productsCtx) {
+                new Chart(productsCtx.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: <?php echo $product_labels; ?>,
+                        datasets: [{
+                            label: 'Units Sold',
+                            data: <?php echo $product_data; ?>,
+                            backgroundColor: [
+                                'rgba(16, 185, 129, 0.8)',
+                                'rgba(79, 70, 229, 0.8)',
+                                'rgba(245, 158, 11, 0.8)',
+                                'rgba(239, 68, 68, 0.8)',
+                                'rgba(139, 92, 246, 0.8)'
+                            ],
+                            borderColor: [
+                                'rgb(16, 185, 129)',
+                                'rgb(79, 70, 229)',
+                                'rgb(245, 158, 11)',
+                                'rgb(239, 68, 68)',
+                                'rgb(139, 92, 246)'
+                            ],
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    stepSize: 1
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            <?php else: ?>
+            // Display message if no data
+            const productsCtx = document.getElementById('productsChart');
+            if (productsCtx) {
+                productsCtx.parentElement.innerHTML = '<p class="text-gray-500 text-center py-8">No product sales data available</p>';
+            }
+            <?php endif; ?>
         });
     </script>
 </body>
